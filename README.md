@@ -3,54 +3,73 @@ Spring Security with PostgreSQL-backed user authentication.
 
 ## PostgreSQL setup
 
-The application expects a PostgreSQL database and a dedicated, read-only connection account. In a PostgreSQL console, create the account and database (replace the example database password):
+The application connects to the `security` database on `localhost:5432` as the dedicated `security` database role. Create the database as a PostgreSQL administrator if it does not already exist:
 
 ```sql
-CREATE ROLE security_app LOGIN PASSWORD 'replace-with-a-strong-database-password';
-CREATE DATABASE security_db;
+CREATE DATABASE security;
 ```
 
-Connect to `security_db` as a database administrator, then create the application schema and tables:
+Connect to the `security` database and run the following SQL as a database administrator. The `security` role must exist for the grants; create it first if needed, replacing the example database password:
 
 ```sql
-CREATE SCHEMA security;
+CREATE ROLE security LOGIN PASSWORD 'replace-with-a-strong-database-password';
 
-CREATE TABLE security.app_users (
-    username VARCHAR(100) PRIMARY KEY,
+CREATE SCHEMA IF NOT EXISTS security;
+
+CREATE TABLE IF NOT EXISTS security.app_users (
+    username      VARCHAR(100) PRIMARY KEY,
     password_hash VARCHAR(100) NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE security.app_user_authorities (
-    username VARCHAR(100) NOT NULL REFERENCES security.app_users (username) ON DELETE CASCADE,
-    authority VARCHAR(100) NOT NULL CHECK (authority ~ '^ROLE_[A-Z0-9_]+$'),
+CREATE TABLE IF NOT EXISTS security.app_user_authorities (
+    username  VARCHAR(100) NOT NULL
+        REFERENCES security.app_users (username) ON DELETE CASCADE,
+    authority VARCHAR(100) NOT NULL
+        CHECK (authority ~ '^ROLE_[A-Z0-9_]+$'),
     PRIMARY KEY (username, authority)
 );
 
-GRANT CONNECT ON DATABASE security_db TO security_app;
-GRANT USAGE ON SCHEMA security TO security_app;
-GRANT SELECT ON ALL TABLES IN SCHEMA security TO security_app;
+GRANT CONNECT ON DATABASE security TO security;
+GRANT USAGE ON SCHEMA security TO security;
+GRANT SELECT ON ALL TABLES IN SCHEMA security TO security;
 ```
 
-To add an initial account, `pgcrypto` can generate a BCrypt-compatible hash. Replace the example password before running this and do not use it as a real credential:
+Install `pgcrypto` and create example accounts. Replace the password placeholders with strong, unique passwords; do not commit real passwords or leave them in shell history.
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 INSERT INTO security.app_users (username, password_hash)
-VALUES ('admin', crypt('replace-with-a-strong-user-password', gen_salt('bf', 12)));
+VALUES ('user1', crypt('replace-with-a-strong-user-password', gen_salt('bf', 12)));
 
 INSERT INTO security.app_user_authorities (username, authority)
-VALUES ('admin', 'ROLE_ADMIN');
+VALUES ('user1', 'ROLE_USER');
+
+INSERT INTO security.app_users (username, password_hash)
+VALUES ('admin1', crypt('replace-with-a-different-strong-admin-password', gen_salt('bf', 12)));
+
+INSERT INTO security.app_user_authorities (username, authority)
+VALUES ('admin1', 'ROLE_ADMIN');
 ```
 
-Run the seed statements as the database administrator (the application account is read-only). Use `ROLE_USER` for a regular user. The application stores password hashes, not plaintext passwords; each account needs at least one authority. `ROLE_USER` can access `/user`, while `ROLE_ADMIN` can access both `/user` and `/admin`.
+Each account needs an authority. `ROLE_USER` can access `/user`, while `ROLE_ADMIN` can access `/admin` and `/user`. Passwords are stored as BCrypt hashes, not plaintext.
 
-Configure the application's PostgreSQL connection through environment variables (these are database login details, separate from application user accounts):
+### Password hashing and encoders
 
-```text
-DB_URL=jdbc:postgresql://localhost:5432/security_db
-DB_USERNAME=security_app
-DB_PASSWORD=<the database account password>
+In the seed SQL, `gen_salt('bf', 12)` generates a random salt for the `bf` (BCrypt) algorithm with a cost factor of 12. `crypt(password, salt)` uses that salt to produce a one-way password hash. The encoded result contains the algorithm, cost, salt, and hash, so PostgreSQL can verify a later login attempt without storing the original password. A salt makes identical passwords hash differently; the work factor makes guessing expensive. It is not encryption: the hash cannot be decrypted to recover the password.
+
+The application currently exposes Spring Security's `BCryptPasswordEncoder` as its `PasswordEncoder` bean. During form login, Spring compares the submitted password with the stored hash. BCrypt hashes produced by PostgreSQL's `crypt(..., gen_salt('bf', 12))` are compatible with this encoder. For new accounts created by application code, use the injected `PasswordEncoder.encode(rawPassword)` and save that result in `password_hash`; never save the raw password.
+
+Choose another encoder only when you have a concrete need, such as a security-policy requirement or a planned migration. Argon2, scrypt, and PBKDF2 are common adaptive alternatives; compare their security, operational cost, and library/deployment requirements. When changing algorithms, use one encoder consistently for both password creation and login verification, and migrate existing hashes (often by re-encoding after a successful login). Spring's `DelegatingPasswordEncoder` supports mixed formats by storing an algorithm id such as `{bcrypt}` before the hash. Do not add that prefix while using the current plain `BCryptPasswordEncoder` unless the application is also changed to use a delegating encoder.
+
+### Database connection configuration
+
+`src/main/resources/application.yaml` does not contain a database password. It reads `DB_PASSWORD` from the process environment; `DB_URL` and `DB_USERNAME` can also override the local defaults. Set `DB_PASSWORD` to the password for the PostgreSQL `security` role before starting the application. For example, in a PowerShell terminal:
+
+```powershell
+$env:DB_PASSWORD = "your-database-role-password"
 ```
+
+Set this through your IDE's run configuration or a secret manager for other environments. Do not put database credentials in source control. If a password that was previously committed or shared is real, rotate it.
