@@ -5,19 +5,18 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.core.userdetails.User;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+
+import javax.sql.DataSource;
 
 @Configuration
 @EnableWebSecurity
 public class SecurityConfiguration {
 
-    private static final String DEMO_PASSWORD = "Password";
     private static final String ROLE_USER = "USER";
     private static final String ROLE_ADMIN = "ADMIN";
 
@@ -34,19 +33,13 @@ public class SecurityConfiguration {
     }
 
     @Bean
-    public UserDetailsService userDetailsService(PasswordEncoder passwordEncoder) {
-        UserDetails user = User.builder()
-            .username("user")
-            .password(passwordEncoder.encode(DEMO_PASSWORD))
-            .roles(ROLE_USER)
-            .build();
-        UserDetails admin = User.builder()
-            .username("admin")
-            .password(passwordEncoder.encode(DEMO_PASSWORD))
-            .roles(ROLE_ADMIN)
-            .build();
-
-        return new InMemoryUserDetailsManager(user, admin);
+    public UserDetailsService userDetailsService(DataSource dataSource) {
+        JdbcUserDetailsManager userDetailsManager = new JdbcUserDetailsManager(dataSource);
+        userDetailsManager.setUsersByUsernameQuery(
+            "select username, password_hash as password, enabled from security.app_users where username = ?");
+        userDetailsManager.setAuthoritiesByUsernameQuery(
+            "select username, authority from security.app_user_authorities where username = ?");
+        return userDetailsManager;
     }
 
     @Bean
