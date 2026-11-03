@@ -1,10 +1,10 @@
-package anurag.java.security;
+package anurag.java.security.controller;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController 
-public class HomeResources {
+public class HomeController {
 
     @GetMapping ("/")
     public String home() {

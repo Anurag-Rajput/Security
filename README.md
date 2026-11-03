@@ -1,7 +1,36 @@
 # Security
 Spring Security with PostgreSQL-backed user authentication.
 
+## Project structure
+
+The application uses a layered package layout under `anurag.java.security`:
+
+```text
+anurag.java.security
+├── SecurityApplication.java       # Application entry point
+├── ServletInitializer.java        # External servlet-container deployment
+├── config/                        # Security and application configuration
+├── controller/                    # HTTP endpoints
+├── entity/                        # JPA entities and embedded IDs
+├── repository/                    # Spring Data persistence interfaces
+└── service/                       # Authentication and business logic
+```
+
+Keep the application class at the root package. `@SpringBootApplication`
+automatically scans its package and all subpackages for components, entities, and
+Spring Data repositories. Explicit `@EntityScan` and `@EnableJpaRepositories`
+annotations are therefore unnecessary for this layout; if packages are moved
+outside the root package in a future project, configure scanning explicitly.
+
 ## PostgreSQL setup
+
+The application uses Spring Data JPA for authentication persistence. `AppUser` maps
+to `security.app_users`, and `AppUserAuthority` maps to
+`security.app_user_authorities`; the JPA-backed `UserDetailsService` loads both
+records when Spring Security authenticates a user. Hibernate uses
+`ddl-auto=validate`, so the database schema must be created before startup and is
+checked for compatibility without being modified. The existing PostgreSQL tables
+below remain compatible.
 
 The application connects to the `security` database on `localhost:5432` as the dedicated `security` database role. Create the database as a PostgreSQL administrator if it does not already exist:
 
