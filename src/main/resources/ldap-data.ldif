@@ -1,0 +1,41 @@
+dn: ou=people,dc=springframework,dc=org
+objectClass: top
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=springframework,dc=org
+objectClass: top
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=ldap-user,ou=people,dc=springframework,dc=org
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+uid: ldap-user
+cn: LDAP User
+sn: User
+userPassword: change-me-now
+
+dn: uid=ldap-admin,ou=people,dc=springframework,dc=org
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+uid: ldap-admin
+cn: LDAP Admin
+sn: Admin
+userPassword: change-me-now
+
+dn: cn=USER,ou=groups,dc=springframework,dc=org
+objectClass: top
+objectClass: groupOfNames
+cn: USER
+member: uid=ldap-user,ou=people,dc=springframework,dc=org
+
+dn: cn=ADMIN,ou=groups,dc=springframework,dc=org
+objectClass: top
+objectClass: groupOfNames
+cn: ADMIN
+member: uid=ldap-admin,ou=people,dc=springframework,dc=org

@@ -1,67 +1,110 @@
 package anurag.java.security;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.sdk.LDAPException;
+import com.unboundid.ldif.LDIFException;
+import java.io.IOException;
+import java.net.ServerSocket;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 
-@SpringBootTest(properties = {
-	"spring.datasource.url=jdbc:h2:mem:security;DB_CLOSE_DELAY=-1",
-	"spring.datasource.username=sa",
-	"spring.datasource.driver-class-name=org.h2.Driver"
-})
+@SpringBootTest
 class SecurityApplicationTests {
 
-	@Autowired
-	private JdbcTemplate jdbcTemplate;
+	private static InMemoryDirectoryServer ldapServer;
 
 	@Autowired
-	private UserDetailsService userDetailsService;
+	private AuthenticationManager authenticationManager;
 
-	@Autowired
-	private PasswordEncoder passwordEncoder;
+	@DynamicPropertySource
+	static void ldapProperties(DynamicPropertyRegistry registry) {
+		try {
+			int port;
+			try (ServerSocket socket = new ServerSocket(0)) {
+				port = socket.getLocalPort();
+			}
 
-	@Test
-	void contextLoads() {
+			InMemoryDirectoryServerConfig config =
+				new InMemoryDirectoryServerConfig("dc=example,dc=org");
+			config.setListenerConfigs(InMemoryListenerConfig.createLDAPConfig("default", port));
+			ldapServer = new InMemoryDirectoryServer(config);
+			ldapServer.add(
+				"dn: dc=example,dc=org",
+				"objectClass: top",
+				"objectClass: domain",
+				"dc: example");
+			ldapServer.add(
+				"dn: ou=people,dc=example,dc=org",
+				"objectClass: top",
+				"objectClass: organizationalUnit",
+				"ou: people");
+			ldapServer.add(
+				"dn: ou=groups,dc=example,dc=org",
+				"objectClass: top",
+				"objectClass: organizationalUnit",
+				"ou: groups");
+			ldapServer.add(
+				"dn: uid=ldap-user,ou=people,dc=example,dc=org",
+				"objectClass: top",
+				"objectClass: person",
+				"objectClass: organizationalPerson",
+				"objectClass: inetOrgPerson",
+				"cn: LDAP User",
+				"sn: User",
+				"uid: ldap-user",
+				"userPassword: ldap-password");
+			ldapServer.add(
+				"dn: cn=USER,ou=groups,dc=example,dc=org",
+				"objectClass: top",
+				"objectClass: groupOfNames",
+				"cn: USER",
+				"member: uid=ldap-user,ou=people,dc=example,dc=org");
+			ldapServer.startListening();
+
+			registry.add("spring.ldap.urls", () -> "ldap://localhost:" + port);
+			registry.add("spring.ldap.base", () -> "dc=example,dc=org");
+			registry.add("spring.ldap.username", () -> "");
+			registry.add("spring.ldap.password", () -> "");
+		} catch (IOException | LDAPException | LDIFException exception) {
+			throw new IllegalStateException("Unable to start embedded LDAP for tests", exception);
+		}
+	}
+
+	@AfterAll
+	static void stopLdapServer() {
+		if (ldapServer != null) {
+			ldapServer.shutDown(true);
+		}
 	}
 
 	@Test
-	void loadsHashedUsersAndAuthoritiesFromDatabase() {
-		jdbcTemplate.execute("CREATE SCHEMA security");
-		jdbcTemplate.execute("""
-			CREATE TABLE security.app_users (
-				username VARCHAR(100) PRIMARY KEY,
-				password_hash VARCHAR(100) NOT NULL,
-				enabled BOOLEAN NOT NULL DEFAULT TRUE
-			)
-			""");
-		jdbcTemplate.execute("""
-			CREATE TABLE security.app_user_authorities (
-				username VARCHAR(100) NOT NULL,
-				authority VARCHAR(100) NOT NULL,
-				PRIMARY KEY (username, authority)
-			)
-			""");
+	void authenticatesLdapUserAndLoadsAuthorities() {
+		Authentication authentication = authenticationManager.authenticate(
+			UsernamePasswordAuthenticationToken.unauthenticated("ldap-user", "ldap-password"));
 
-		String password = "test-password";
-		jdbcTemplate.update(
-			"INSERT INTO security.app_users (username, password_hash) VALUES (?, ?)",
-			"test-user",
-			passwordEncoder.encode(password));
-		jdbcTemplate.update(
-			"INSERT INTO security.app_user_authorities (username, authority) VALUES (?, ?)",
-			"test-user",
-			"ROLE_USER");
-
-		UserDetails user = userDetailsService.loadUserByUsername("test-user");
-
-		assertTrue(passwordEncoder.matches(password, user.getPassword()));
-		assertTrue(user.getAuthorities().stream()
+		assertTrue(authentication.isAuthenticated());
+		assertEquals("ldap-user", authentication.getName());
+		assertTrue(authentication.getAuthorities().stream()
 			.anyMatch(authority -> authority.getAuthority().equals("ROLE_USER")));
+	}
+
+	@Test
+	void rejectsInvalidLdapPassword() {
+		assertThrows(AuthenticationException.class, () -> authenticationManager.authenticate(
+			UsernamePasswordAuthenticationToken.unauthenticated("ldap-user", "wrong-password")));
 	}
 }

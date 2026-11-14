@@ -2,16 +2,14 @@ package anurag.java.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.ldap.core.support.BaseLdapPathContextSource;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.provisioning.JdbcUserDetailsManager;
+import org.springframework.security.config.ldap.LdapBindAuthenticationManagerFactory;
+import org.springframework.security.ldap.userdetails.DefaultLdapAuthoritiesPopulator;
 import org.springframework.security.web.SecurityFilterChain;
-
-import javax.sql.DataSource;
 
 @Configuration
 @EnableWebSecurity
@@ -21,29 +19,32 @@ public class SecurityConfiguration {
     private static final String ROLE_ADMIN = "ADMIN";
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            AuthenticationManager authenticationManager) {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/").permitAll()
                 .requestMatchers("/user").hasAnyRole(ROLE_USER, ROLE_ADMIN)
                 .requestMatchers("/admin").hasRole(ROLE_ADMIN)
                 .anyRequest().permitAll())
+            .authenticationManager(authenticationManager)
             .formLogin(Customizer.withDefaults());
 
         return http.build();
     }
 
     @Bean
-    public UserDetailsService userDetailsService(DataSource dataSource) {
-        JdbcUserDetailsManager userDetailsManager = new JdbcUserDetailsManager(dataSource);
-        userDetailsManager.setUsersByUsernameQuery(
-            "select username, password_hash as password, enabled from security.app_users where username = ?");
-        userDetailsManager.setAuthoritiesByUsernameQuery(
-            "select username, authority from security.app_user_authorities where username = ?");
-        return userDetailsManager;
-    }
+    public AuthenticationManager authenticationManager(BaseLdapPathContextSource contextSource) {
+        LdapBindAuthenticationManagerFactory factory =
+            new LdapBindAuthenticationManagerFactory(contextSource);
+        factory.setUserDnPatterns("uid={0},ou=people");
 
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        DefaultLdapAuthoritiesPopulator authoritiesPopulator =
+            new DefaultLdapAuthoritiesPopulator(contextSource, "ou=groups");
+        authoritiesPopulator.setGroupSearchFilter("(member={0})");
+        authoritiesPopulator.setGroupRoleAttribute("cn");
+        factory.setLdapAuthoritiesPopulator(authoritiesPopulator);
+
+        return factory.createAuthenticationManager();
     }
 }

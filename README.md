@@ -1,75 +1,85 @@
 # Security
-Spring Security with PostgreSQL-backed user authentication.
 
-## PostgreSQL setup
+Spring Security authenticates users against LDAP. Login names are resolved as
+`uid={username},ou=people`; group membership is read from `ou=groups` using the
+group's `member` attribute. The group's `cn` becomes its role, prefixed with
+`ROLE_`. For example, a member of the `USER` group can access `/user`, while a
+member of the `ADMIN` group can access both `/admin` and `/user`.
 
-The application connects to the `security` database on `localhost:5432` as the dedicated `security` database role. Create the database as a PostgreSQL administrator if it does not already exist:
+## LDAP configuration
 
-```sql
-CREATE DATABASE security;
-```
+The application reads these settings from the environment, with local defaults
+for an LDAP directory listening on port 8389:
 
-Connect to the `security` database and run the following SQL as a database administrator. The `security` role must exist for the grants; create it first if needed, replacing the example database password:
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `LDAP_URL` | `ldap://localhost:8389` | LDAP server URL |
+| `LDAP_BASE` | `dc=springframework,dc=org` | Directory base DN |
+| `LDAP_BIND_DN` | empty | Optional service account DN for directory searches |
+| `LDAP_BIND_PASSWORD` | empty | Password for the optional service account |
 
-```sql
-CREATE ROLE security LOGIN PASSWORD 'replace-with-a-strong-database-password';
-
-CREATE SCHEMA IF NOT EXISTS security;
-
-CREATE TABLE IF NOT EXISTS security.app_users (
-    username      VARCHAR(100) PRIMARY KEY,
-    password_hash VARCHAR(100) NOT NULL,
-    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS security.app_user_authorities (
-    username  VARCHAR(100) NOT NULL
-        REFERENCES security.app_users (username) ON DELETE CASCADE,
-    authority VARCHAR(100) NOT NULL
-        CHECK (authority ~ '^ROLE_[A-Z0-9_]+$'),
-    PRIMARY KEY (username, authority)
-);
-
-GRANT CONNECT ON DATABASE security TO security;
-GRANT USAGE ON SCHEMA security TO security;
-GRANT SELECT ON ALL TABLES IN SCHEMA security TO security;
-```
-
-Install `pgcrypto` and create example accounts. Replace the password placeholders with strong, unique passwords; do not commit real passwords or leave them in shell history.
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
-INSERT INTO security.app_users (username, password_hash)
-VALUES ('user1', crypt('replace-with-a-strong-user-password', gen_salt('bf', 12)));
-
-INSERT INTO security.app_user_authorities (username, authority)
-VALUES ('user1', 'ROLE_USER');
-
-INSERT INTO security.app_users (username, password_hash)
-VALUES ('admin1', crypt('replace-with-a-different-strong-admin-password', gen_salt('bf', 12)));
-
-INSERT INTO security.app_user_authorities (username, authority)
-VALUES ('admin1', 'ROLE_ADMIN');
-```
-
-Each account needs an authority. `ROLE_USER` can access `/user`, while `ROLE_ADMIN` can access `/admin` and `/user`. Passwords are stored as BCrypt hashes, not plaintext.
-
-### Password hashing and encoders
-
-In the seed SQL, `gen_salt('bf', 12)` generates a random salt for the `bf` (BCrypt) algorithm with a cost factor of 12. `crypt(password, salt)` uses that salt to produce a one-way password hash. The encoded result contains the algorithm, cost, salt, and hash, so PostgreSQL can verify a later login attempt without storing the original password. A salt makes identical passwords hash differently; the work factor makes guessing expensive. It is not encryption: the hash cannot be decrypted to recover the password.
-
-The application currently exposes Spring Security's `BCryptPasswordEncoder` as its `PasswordEncoder` bean. During form login, Spring compares the submitted password with the stored hash. BCrypt hashes produced by PostgreSQL's `crypt(..., gen_salt('bf', 12))` are compatible with this encoder. For new accounts created by application code, use the injected `PasswordEncoder.encode(rawPassword)` and save that result in `password_hash`; never save the raw password.
-
-Choose another encoder only when you have a concrete need, such as a security-policy requirement or a planned migration. Argon2, scrypt, and PBKDF2 are common adaptive alternatives; compare their security, operational cost, and library/deployment requirements. When changing algorithms, use one encoder consistently for both password creation and login verification, and migrate existing hashes (often by re-encoding after a successful login). Spring's `DelegatingPasswordEncoder` supports mixed formats by storing an algorithm id such as `{bcrypt}` before the hash. Do not add that prefix while using the current plain `BCryptPasswordEncoder` unless the application is also changed to use a delegating encoder.
-
-### Database connection configuration
-
-`src/main/resources/application.yaml` does not contain a database password. It reads `DB_PASSWORD` from the process environment; `DB_URL` and `DB_USERNAME` can also override the local defaults. Set `DB_PASSWORD` to the password for the PostgreSQL `security` role before starting the application. For example, in a PowerShell terminal:
+Set the environment for a local run in PowerShell:
 
 ```powershell
-$env:DB_PASSWORD = "your-database-role-password"
+$env:LDAP_URL = "ldaps://ldap.example.com:636"
+$env:LDAP_BASE = "dc=example,dc=com"
+$env:LDAP_BIND_DN = "uid=security-app,ou=service-accounts,dc=example,dc=com"
+$env:LDAP_BIND_PASSWORD = "retrieve-this-from-a-secret-manager"
 ```
 
-Set this through your IDE's run configuration or a secret manager for other environments. Do not put database credentials in source control. If a password that was previously committed or shared is real, rotate it.
+This setup supports LDAPS URLs; ensure the server certificate's issuing CA is
+trusted by the JVM. StartTLS is not enabled by this configuration. Do not send
+user credentials over an unencrypted connection, and keep bind credentials out
+of source control.
+
+The directory should contain users with a `uid`, `cn`, `sn`, and
+`userPassword`, located below `ou=people`. Groups should be below `ou=groups`,
+have a `cn`, and list member user DNs in `member`. A sample directory export
+matching the defaults is provided in
+[`src/main/resources/ldap-data.ldif`](./src/main/resources/ldap-data.ldif).
+It creates `ldap-user` in the `USER` group and `ldap-admin` in the `ADMIN`
+group. Both sample accounts use `change-me-now`; these are development-only
+credentials. Replace them before importing anywhere outside a disposable local
+environment.
+
+### Import the sample entries
+
+Start an LDAP server configured with the `dc=springframework,dc=org` base
+(suffix) on port `8389`. Import from the repository root using the directory
+administrator DN and password configured for your LDAP server; the example
+administrator DN below is common for OpenLDAP but is not universal:
+
+```powershell
+ldapadd -x -H ldap://localhost:8389 `
+  -D "cn=admin,dc=springframework,dc=org" -W `
+  -f .\src\main\resources\ldap-data.ldif
+```
+
+The base DN must already exist in the LDAP server. If you use another base DN,
+change the entry DNs in the LDIF and set `LDAP_BASE` to match. The application
+bind account (`LDAP_BIND_DN`) is for directory searches; it is separate from
+the administrator credentials used by `ldapadd`.
+
+### Start the application
+
+With LDAP running and the entries imported, use the matching defaults or set
+the connection explicitly, then start Spring Boot:
+
+```powershell
+$env:LDAP_URL = "ldap://localhost:8389"
+$env:LDAP_BASE = "dc=springframework,dc=org"
+.\mvnw.cmd spring-boot:run
+```
+
+Open `http://localhost:8080/login` and sign in with `ldap-user` or `ldap-admin`
+and the sample password above. Use LDAPS and directory-managed credentials
+outside local development.
+
+## Tests
+
+The tests start an in-memory LDAP server, so no external LDAP server or
+credentials are required:
+
+```powershell
+.\mvnw.cmd test
+```

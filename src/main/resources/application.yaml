@@ -1,8 +1,8 @@
 spring:
   application:
     name: security
-  datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/security}
-    username: ${DB_USERNAME:security}
-    password: ${DB_PASSWORD}
-    driver-class-name: org.postgresql.Driver
+  ldap:
+    urls: ldap://localhost:8389
+    base: dc=springframework,dc=org
+    username: ""
+    password: ""
